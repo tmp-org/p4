@@ -5,6 +5,7 @@ meta:
 repository:
     owner: galaxyproject
     name: galaxy
+    next_milestone: "16.04"
     # List of people whose +1/-1 votes actually count
     pr_approvers:
         - martenson
@@ -81,3 +82,67 @@ repository:
                     comment: |
                         {author}'s PR has reached the required number of votes
                         for merging.
+        -
+            name: Check merged PRs for review tag.
+            conditions:
+                - state: 'merged'
+                - created_at__ge: 2016
+            actions:
+                -
+                    action: assert_has_tag
+                    action_value: 'status/review'
+                    comment: |
+                        This PR was merged without a 'status/review' tag, please correct.
+        -
+            name: Check merged PRs for a kind tag.
+            conditions:
+                - state: 'merged'
+                - created_at__ge: 2016
+            actions:
+                -
+                    action: assert_has_tag__startswith
+                    action_value: 'kind/'
+                    comment: |
+                        This PR was merged without a 'kind/' tag, please correct.
+        -
+            name: Add status/review to new PRs.
+            conditions:
+                - state: 'merged'
+                - created_at__ge: '2016-01-01'
+                - state: 'open'
+                - title_contains__not: '[WIP]'
+            actions:
+                -
+                    action: assign_tag
+                    action_value: 'status/review'
+        -
+            name: Add status/WIP to new WIP PRs.
+            conditions:
+                - state: 'merged'
+                - created_at__ge: '2016-01-01'
+                - state: 'open'
+                - title_contains: 'WIP'
+            actions:
+                -
+                    action: assign_tag
+                    action_value: 'status/WIP'
+        -
+            name: Add next milesone.
+            conditions:
+                - state: 'open'
+                - created_at__ge: '2016-01-01'
+                - milesone: null
+            actions:
+                -
+                    action: assign_next_milestone
+        -
+            name: Assert has milestone.
+            conditions:
+                - state: 'merged'
+                - created_at__ge: '2016-01-01'
+                - milesone: null
+            actions:
+                -
+                    action: comment
+                    comment: |
+                        This PR was merged without a milestone attached.
