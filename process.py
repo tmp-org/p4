@@ -118,7 +118,7 @@ class PullRequestFilter(object):
         # There are two types of conditions, text and numeric.
         # Numeric conditions are only appropriate for the following types:
         # 1) plus, 2) minus, 3) times which were hacked in
-        if condition_key in ('plus', 'minus', 'created_at'):
+        if condition_key in ('plus', 'minus', 'created_at', 'tag_count'):
             if condition_op == 'gt':
                 return int(result) > int(condition_value)
             elif condition_op == 'ge':
@@ -177,6 +177,16 @@ class PullRequestFilter(object):
 
         return count
 
+    def check_tag_count(self, pr, cv=None):
+        """Checks number of tags
+        """
+        count = 0
+        m = re.compile(cv)
+        issue = self.repo.get_issue(pr.number)
+        for label in issue.get_labels():
+            count += 1
+        return count
+
     def check_has_tag(self, pr, cv=None):
         """Checks that at least one tag matches the regex provided in condition_value
         """
@@ -222,14 +232,13 @@ class PullRequestFilter(object):
         """
         comment_text = action['comment'].format(
             author='@' + pr.user.login
-            #TODO
-            #merged_by=
+            # TODO
+            # merged_by=
         ).strip().replace('\n', ' ')
 
         # Check if we've made this exact comment before, so we don't comment
         # multiple times and annoy people.
-        for possible_bot_comment in self._find_in_comments(
-            pr, comment_text):
+        for possible_bot_comment in self._find_in_comments(pr, comment_text):
 
             if possible_bot_comment.user.login == self.bot_user:
                 log.info("Comment action previously applied, not duplicating")
@@ -248,6 +257,12 @@ class PullRequestFilter(object):
         """
         # Can only update milestone through associated PR issue.
         self.issue.edit(milestone=self.next_milestone)
+
+    def execute_remove_tag(self, pr, action):
+        """Tags a PR
+        """
+        tag_name = action['action_value']
+        self.issue.remove_from_labels(tag_name)
 
     def execute_assign_tag(self, pr, action):
         """Tags a PR

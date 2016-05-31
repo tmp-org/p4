@@ -107,14 +107,22 @@ repository:
                 - created_at__ge: 'precise::2016-01-01'
                 - state: 'open'
                 # This probably isn't perfect, but it'll be better
-                - has_tag__not: 'triage'
-                - has_tag__not: 'area/.*'
-                - has_tag__not: 'kind/.*'
-                - has_tag__not: 'status/.*'
-                - has_tag__not: 'merge'
+                - tag_count__eq: 0
             actions:
                 -
                     action: assign_tag
+                    action_value: 'triage'
+        -
+            name: Remove triage from tagged PRs
+            conditions:
+                - created_at__ge: 'precise::2016-01-01'
+                # Must have at least two tags, i.e. triage + one other
+                - tag_count__ge: 2
+                # And one of them has to be triage.
+                - has_tag: 'triage'
+            actions:
+                -
+                    action: remove_tag
                     action_value: 'triage'
         -
             name: Add status/WIP to new WIP PRs.
