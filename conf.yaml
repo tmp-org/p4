@@ -183,6 +183,7 @@ repository:
                 - state: 'open'
                 # jmchilton originally requested this be more -1s than +1s.
                 - minus__ge: 3
+                - plus__le: 2
                 - has_tag__not: 'popularity/unpopular'
             actions:
                 -
