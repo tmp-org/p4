@@ -49,12 +49,6 @@ class GHTarget(object):
         executed
         """
         log.debug("\t[%s]", self.name)
-        try:
-            self.issue = self.repo.get_issue(pr.number)
-        except Exception, e:
-            log.warn("Could not access issue")
-            log.warn(e)
-            return False
 
         for (condition_key, condition_value) in self._condition_it():
             res = self.evaluate(pr, condition_key, condition_value)
@@ -181,7 +175,7 @@ class GHTarget(object):
         """
         count = 0
         m = re.compile(cv)
-        issue = self.repo.get_issue(pr.number)
+        issue = self.get_issue(pr)
         for label in issue.get_labels():
             count += 1
         return count
@@ -191,7 +185,7 @@ class GHTarget(object):
         """
         # Tags aren't actually listed in the PR, we have to fetch the issue for that
         m = re.compile(cv)
-        issue = self.repo.get_issue(pr.number)
+        issue = self.get_issue(pr)
         for label in issue.get_labels():
             if m.match(label.name):
                 return True
@@ -245,7 +239,7 @@ class GHTarget(object):
             return
 
         # Create the comment
-        self.get_issue().create_comment(
+        self.get_issue(pr).create_comment(
             comment_text
         )
 
@@ -253,27 +247,27 @@ class GHTarget(object):
         """Assigns a pr's milestone to next_milestone
         """
         # Can only update milestone through associated PR issue.
-        self.get_issue().edit(milestone=self.next_milestone)
+        self.get_issue(pr).edit(milestone=self.next_milestone)
 
     def execute_remove_tag(self, pr, action):
         """Tags a PR
         """
         tag_name = action['action_value']
-        self.get_issue().remove_from_labels(tag_name)
+        self.get_issue(pr).remove_from_labels(tag_name)
 
     def execute_assign_tag(self, pr, action):
         """Tags a PR
         """
         tag_name = action['action_value']
-        self.get_issue().add_to_labels(tag_name)
+        self.get_issue(pr).add_to_labels(tag_name)
 
     def execute_remove_tag(self, pr, action):
         """remove a tag from PR if it matches the regex
         """
         m = re.compile(action['action_value'])
-        for label in self.get_issue().get_labels():
+        for label in self.get_issue(pr).get_labels():
             if m.match(label.name):
-                self.get_issue().remove_from_labels(label.name)
+                self.get_issue(pr).remove_from_labels(label.name)
 
 
 class IssueFilter(GHTarget):
@@ -282,7 +276,7 @@ class IssueFilter(GHTarget):
         super(self, IssueFilter).__init__(*args, **kwargs)
         log.info("Registered IssueFilter %s", name)
 
-    def get_issue(self):
+    def get_issue(self, issue):
         return self
 
 
@@ -292,8 +286,8 @@ class PullRequestFilter(GHTarget):
         super(self, PullRequestFilter).__init__(*args, **kwargs)
         log.info("Registered PullRequestFilter %s", name)
 
-    def get_issue(self):
-        return self.issue
+    def get_issue(self, pr):
+        return self.repo.get_issue(pr.number)
 
     def check_to_branch(self, pr, cv=None):
         return pr.base.ref == cv
