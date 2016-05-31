@@ -25,7 +25,7 @@ UPVOTE_REGEX = '(:\+1:|^\s*\+1\s*$)'
 DOWNVOTE_REGEX = '(:\-1:|^\s*\-1\s*$)'
 
 
-class PullRequestFilter(object):
+class GHTarget(object):
 
     def __init__(self, name, conditions, actions, committer_group=None,
                  bot_user=None, dry_run=False, next_milestone=None, repo=None):
@@ -37,7 +37,6 @@ class PullRequestFilter(object):
         self.bot_user = bot_user
         self.dry_run = dry_run
         self.next_milestone = next_milestone
-        log.info("Registered PullRequestFilter %s", name)
 
     def _condition_it(self):
         for condition_dict in self.conditions:
@@ -50,12 +49,6 @@ class PullRequestFilter(object):
         executed
         """
         log.debug("\t[%s]", self.name)
-        try:
-            self.issue = self.repo.get_issue(pr.number)
-        except Exception, e:
-            log.warn("Could not access issue")
-            log.warn(e)
-            return False
 
         for (condition_key, condition_value) in self._condition_it():
             res = self.evaluate(pr, condition_key, condition_value)
@@ -118,7 +111,7 @@ class PullRequestFilter(object):
         # There are two types of conditions, text and numeric.
         # Numeric conditions are only appropriate for the following types:
         # 1) plus, 2) minus, 3) times which were hacked in
-        if condition_key in ('plus', 'minus', 'created_at'):
+        if condition_key in ('plus', 'minus', 'created_at', 'tag_count'):
             if condition_op == 'gt':
                 return int(result) > int(condition_value)
             elif condition_op == 'ge':
@@ -162,7 +155,7 @@ class PullRequestFilter(object):
         """Search for hits to a regex in a list of comments
         """
         if getattr(pr, 'memo_comments', None) is None:
-            pr.memo_comments = list(self.issue.get_comments())
+            pr.memo_comments = list(self.get_issue().get_comments())
 
         for comment in pr.memo_comments:
             # log.debug('%s, "%s" => %s', regex, comment.body, re.match(regex, comment.body))
@@ -177,12 +170,22 @@ class PullRequestFilter(object):
 
         return count
 
+    def check_tag_count(self, pr, cv=None):
+        """Checks number of tags
+        """
+        count = 0
+        m = re.compile(cv)
+        issue = self.get_issue(pr)
+        for label in issue.get_labels():
+            count += 1
+        return count
+
     def check_has_tag(self, pr, cv=None):
         """Checks that at least one tag matches the regex provided in condition_value
         """
         # Tags aren't actually listed in the PR, we have to fetch the issue for that
         m = re.compile(cv)
-        issue = self.repo.get_issue(pr.number)
+        issue = self.get_issue(pr)
         for label in issue.get_labels():
             if m.match(label.name):
                 return True
@@ -197,8 +200,6 @@ class PullRequestFilter(object):
 
         return count
 
-    def check_to_branch(self, pr, cv=None):
-        return pr.base.ref == cv
 
     def check_created_at(self, pr, cv=None):
         """Due to condition_values with times, check_created_at simply returns pr.created_at
@@ -222,14 +223,13 @@ class PullRequestFilter(object):
         """
         comment_text = action['comment'].format(
             author='@' + pr.user.login
-            #TODO
-            #merged_by=
+            # TODO
+            # merged_by=
         ).strip().replace('\n', ' ')
 
         # Check if we've made this exact comment before, so we don't comment
         # multiple times and annoy people.
-        for possible_bot_comment in self._find_in_comments(
-            pr, comment_text):
+        for possible_bot_comment in self._find_in_comments(pr, comment_text):
 
             if possible_bot_comment.user.login == self.bot_user:
                 log.info("Comment action previously applied, not duplicating")
@@ -239,7 +239,7 @@ class PullRequestFilter(object):
             return
 
         # Create the comment
-        self.issue.create_comment(
+        self.get_issue(pr).create_comment(
             comment_text
         )
 
@@ -247,21 +247,50 @@ class PullRequestFilter(object):
         """Assigns a pr's milestone to next_milestone
         """
         # Can only update milestone through associated PR issue.
-        self.issue.edit(milestone=self.next_milestone)
+        self.get_issue(pr).edit(milestone=self.next_milestone)
+
+    def execute_remove_tag(self, pr, action):
+        """Tags a PR
+        """
+        tag_name = action['action_value']
+        self.get_issue(pr).remove_from_labels(tag_name)
 
     def execute_assign_tag(self, pr, action):
         """Tags a PR
         """
         tag_name = action['action_value']
-        self.issue.add_to_labels(tag_name)
+        self.get_issue(pr).add_to_labels(tag_name)
 
     def execute_remove_tag(self, pr, action):
         """remove a tag from PR if it matches the regex
         """
         m = re.compile(action['action_value'])
-        for label in self.issue.get_labels():
+        for label in self.get_issue(pr).get_labels():
             if m.match(label.name):
-                self.issue.remove_from_labels(label.name)
+                self.get_issue(pr).remove_from_labels(label.name)
+
+
+class IssueFilter(GHTarget):
+
+    def __init__(self, *args, **kwargs):
+        super(self, IssueFilter).__init__(*args, **kwargs)
+        log.info("Registered IssueFilter %s", name)
+
+    def get_issue(self, issue):
+        return self
+
+
+class PullRequestFilter(GHTarget):
+
+    def __init__(self, *args, **kwargs):
+        super(self, PullRequestFilter).__init__(*args, **kwargs)
+        log.info("Registered PullRequestFilter %s", name)
+
+    def get_issue(self, pr):
+        return self.repo.get_issue(pr.number)
+
+    def check_to_branch(self, pr, cv=None):
+        return pr.base.ref == cv
 
 
 class MergerBot(object):
@@ -281,12 +310,13 @@ class MergerBot(object):
         self.repo = gh.get_repo(self.repo_owner + '/' + self.repo_name)
 
         self.pr_filters = []
+        self.issue_filters = []
         self.next_milestone = [
             milestone for milestone in self.repo.get_milestones() if
             milestone.title == self.config['repository']['next_milestone']][0]
 
-        for rule in self.config['repository']['filters']:
-            prf = PullRequestFilter(
+        def rule2kw(rule):
+            return dict(
                 name=rule['name'],
                 conditions=rule['conditions'],
                 actions=rule['actions'],
@@ -296,7 +326,28 @@ class MergerBot(object):
                 bot_user=self.config['meta']['bot_user'],
                 dry_run=self.dry_run,
             )
+
+        for rule in self.config['repository']['pr_filters']:
+            prf = PullRequestFilter(
+                **rule2kw(rule)
+            )
             self.pr_filters.append(prf)
+
+        for rule in self.config['repository']['common_filters']:
+            prf = PullRequestFilter(
+                **rule2kw(rule)
+            )
+            self.pr_filters.append(prf)
+            isf = IssueFilter(
+                **rule2kw(rule)
+            )
+            self.issue_filters.append(isf)
+
+        for rule in self.config['repository']['issue_filters']:
+            isf = IssueFilter(
+                **rule2kw(rule)
+            )
+            self.issue_filters.append(isf)
 
     def create_db(self, database_name='cache.sqlite'):
         """Create the database if it doesn't exist"""
@@ -308,13 +359,22 @@ class MergerBot(object):
                 pr_id INTEGER PRIMARY KEY,
                 updated_at TEXT
             )
+            CREATE TABLE IF NOT EXISTS issue_data(
+                issue_id INTEGER PRIMARY KEY,
+                updated_at TEXT
+            )
             """
         )
 
-    def fetch_pr_from_db(self, id):
-        """select PR from database cache by PR #"""
+    def fetch_from_db(self, id, object_type='pulls'):
+        """select PR/Issue from database cache by #"""
         cursor = self.conn.cursor()
-        cursor.execute("""SELECT * FROM pr_data WHERE pr_id == ?""", (str(id), ))
+        if object_type == 'pulls':
+            query = """SELECT * FROM pr_data WHERE pr_id == ?"""
+        else:
+            query = """SELECT * FROM issue_data WHERE issue_id == ?"""
+
+        cursor.execute(query, (str(id), ))
         row = cursor.fetchone()
 
         if row is None:
@@ -326,73 +386,99 @@ class MergerBot(object):
         )
         return pretty_row
 
-    def cache_pr(self, id, updated_at):
-        """Store the PR in the DB cache, along with the last-updated
+    def cache_object(self, id, updated_at, object_type='pulls'):
+        """Store the PR/Issue in the DB cache, along with the last-updated
         date"""
         cursor = self.conn.cursor()
-        cursor.execute("""INSERT INTO pr_data VALUES (?, ?)""",
-                       (str(id), updated_at.strftime(self.timefmt)))
+
+        if object_type == 'pulls':
+            query = """INSERT INTO pr_data VALUES (?, ?)"""
+        else:
+            query = """INSERT INTO issue_data VALUES (?, ?)"""
+
+        cursor.execute(query, (str(id), updated_at.strftime(self.timefmt)))
         self.conn.commit()
 
-    def update_pr(self, id, updated_at):
+    def update_object(self, id, updated_at, object_type='pulls'):
         """Update the PR date in the cache"""
         if self.dry_run:
             return
         cursor = self.conn.cursor()
-        cursor.execute("""UPDATE pr_data SET updated_at = ? where pr_id = ?""",
-                       (updated_at.strftime(self.timefmt), str(id)))
+
+        if object_type == 'pulls':
+            query = """UPDATE pr_data SET updated_at = ? where pr_id = ?"""
+        else:
+            query = """UPDATE issue_data SET updated_at = ? where issue_id = ?"""
+
+        cursor.execute(query, (updated_at.strftime(self.timefmt), str(id)))
         self.conn.commit()
 
-    def all_prs(self):
-        """List all open PRs in the repo.
 
-        This... needs work. As it is it fetches EVERY PR, open and closed
+    def fetch_all(self, object_type='pulls', state_open=True, state_closed=False)
+        """List all open X in the repo.
+
+        This... needs work. As it is it fetches EVERY X, open and closed
         and that's a monotonically increasing number of API requests per
         run. Suboptimal.
         """
-        log.info("Locating closed PRs")
-        results = self.repo.get_pulls(state='closed')
-        for i, result in enumerate(results):
-            yield result
+        assert object_type in ('pulls', 'issues')
+        f = getattr(self.repo, 'get_' + object_type)
 
-        log.info("Locating open PRs")
-        results = self.repo.get_pulls(state='open')
-        for result in results:
-            yield result
+        if state_closed:
+            log.info("Locating closed " + object_type)
+            results = f(state='closed')
+            for i, result in enumerate(results):
+                yield result
 
-    def get_modified_prs(self):
-        """This will contain a list of all new/updated PRs to filter
+        if state_open:
+            log.info("Locating open " + object_type)
+            results = f(state='open')
+            for result in results:
+                yield result
+
+    def get_modified(self, object_type='pulls'):
+        """This will contain a list of all new/updated {object_type} to filter
         """
-        changed_prs = []
+        changed = []
         # Loop across our GH results
-        for resource in self.all_prs():
-            # Fetch the PR's ID which we use as a key in our db.
-            cached_pr = self.fetch_pr_from_db(resource.id)
+        for resource in self.fetch_all(object_type=object_type, state_open=True, state_closed=False):
+            # Fetch the issue's ID which we use as a key in our db.
+            cached = self.fetch_from_db(resource.id, object_type=object_type)
             # If it's new, cache it.
-            if cached_pr is None:
-                self.cache_pr(resource.id, resource.updated_at)
-                changed_prs.append(resource)
+            if cached is None:
+                self.cache_object(resource.id, resource.updated_at, object_type=object_type)
+                changed.append(resource)
             else:
                 # compare updated_at times.
-                cached_pr_time = cached_pr[1]
-                if cached_pr_time != resource.updated_at:
-                    log.debug('[%s] Cache says: %s last updated at %s', resource.number, cached_pr_time, resource.updated_at)
-                    changed_prs.append(resource)
-        return changed_prs
+                cached_time = cached[1]
+                if cached_time != resource.updated_at:
+                    log.debug('[%s] Cache says: %s last updated at %s', resource.number, cached_time, resource.updated_at)
+                    changed.append(resource)
+        return changed
 
     def run(self):
         """Find modified PRs, apply the PR filter, and execute associated
         actions"""
-        changed_prs = self.get_modified_prs()
+
+        changed_issues = self.get_modified(object_type='issues')
+        log.info("Found %s issues to examine", len(changed_issues))
+        for changed in changed_issues:
+            log.debug("Evaluating %s", changed.number)
+            for issue_filter in self.issue_filters:
+                success = issue_filter.apply(changed)
+                if success and not self.dry_run:
+                    # Otherwise we'll hit it again later
+                    self.update_object(changed.id, changed.updated_at, type='issue')
+
+        changed_prs = self.get_modified(object_type='pulls')
         log.info("Found %s PRs to examine", len(changed_prs))
         for changed in changed_prs:
-
             log.debug("Evaluating %s", changed.number)
             for pr_filter in self.pr_filters:
                 success = pr_filter.apply(changed)
                 if success and not self.dry_run:
                     # Otherwise we'll hit it again later
-                    self.update_pr(changed.id, changed.updated_at)
+                    self.update_object(changed.id, changed.updated_at, type='pr')
 
 
 if __name__ == '__main__':

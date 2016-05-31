@@ -29,7 +29,7 @@ repository:
         - mvdbeek
         - remimarenco
     # Filters are designed to say "is this PR at the current state in time interesting?"
-    filters:
+    pr_filters:
         -
             # Name isn't really used except in logging messages.
             name: Check Procedures PRs for mergability
@@ -101,22 +101,6 @@ repository:
                     comment: |
                         This PR was merged without a 'kind/' tag, please correct.
         -
-            name: Add triage to new PRs.
-            conditions:
-                # We're only tagging new PRs as of these changes
-                - created_at__ge: 'precise::2016-01-01'
-                - state: 'open'
-                # This probably isn't perfect, but it'll be better
-                - has_tag__not: 'triage'
-                - has_tag__not: 'area/.*'
-                - has_tag__not: 'kind/.*'
-                - has_tag__not: 'status/.*'
-                - has_tag__not: 'merge'
-            actions:
-                -
-                    action: assign_tag
-                    action_value: 'triage'
-        -
             name: Add status/WIP to new WIP PRs.
             # Auto-tag things as WIP since submitters cannot.
             conditions:
@@ -169,12 +153,15 @@ repository:
                 -
                     action: assign_tag
                     action_value: 'merge'
+    #issue_filters:
+    common_filters:
         -
             name: hotness - ouch
             conditions:
                 - state: 'open'
                 # jmchilton originally requested this be more -1s than +1s.
                 - minus__ge: 3
+                - plus__le: 2
                 - has_tag__not: 'popularity/unpopular'
             actions:
                 -
@@ -219,3 +206,27 @@ repository:
                 -
                     action: assign_tag
                     action_value: 'popularity/significant'
+        -
+            name: Add triage to new PRs.
+            conditions:
+                # We're only tagging new PRs as of these changes
+                - created_at__ge: 'precise::2016-01-01'
+                - state: 'open'
+                # This probably isn't perfect, but it'll be better
+                - tag_count__eq: 0
+            actions:
+                -
+                    action: assign_tag
+                    action_value: 'triage'
+        -
+            name: Remove triage from tagged PRs
+            conditions:
+                - created_at__ge: 'precise::2016-01-01'
+                # Must have at least two tags, i.e. triage + one other
+                - tag_count__ge: 2
+                # And one of them has to be triage.
+                - has_tag: 'triage'
+            actions:
+                -
+                    action: remove_tag
+                    action_value: 'triage'
